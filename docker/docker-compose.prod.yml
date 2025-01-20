@@ -12,9 +12,13 @@ services:
       dockerfile: server/Dockerfile
     volumes:
       - ${UPLOAD_LOCATION}/photos:/usr/src/app/upload
+      - idrivee2-photo-prod:/usr/src/app/upload
+      - ./rclone.conf:/config/rclone.conf:ro
       - /etc/localtime:/etc/localtime:ro
     env_file:
       - .env
+    environment:
+      - RCLONE_CONFIG=/config/rclone.conf
     ports:
       - 2283:2283
     depends_on:
@@ -23,6 +27,25 @@ services:
     restart: always
     healthcheck:
       disable: false
+
+  rclone-backup:
+    image: alpine:latest
+    volumes:
+      - ${UPLOAD_LOCATION}/upload:/source/uploads:ro
+      - ./rclone.conf:/config/rclone.conf:ro
+      - ./watch-and-sync.sh:/watch-and-sync.sh
+      - rclone-cache:/cache
+    environment:
+      - RCLONE_CONFIG=/config/rclone.conf
+    entrypoint: |
+      /bin/sh -c '
+      apk add --no-cache rclone &&
+      apk add --no-cache inotify-tools &&
+      chmod +x /watch-and-sync.sh &&
+      /watch-and-sync.sh'
+    restart: unless-stopped
+    depends_on:
+      - immich-server
 
   immich-machine-learning:
     container_name: immich_machine_learning
@@ -68,22 +91,12 @@ services:
       - 5432:5432
     healthcheck:
       test: >-
-        pg_isready --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" || exit 1;
-        Chksum="$$(psql --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" --tuples-only --no-align
-        --command='SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database')";
-        echo "checksum failure count is $$Chksum";
-        [ "$$Chksum" = '0' ] || exit 1
+        pg_isready --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" || exit 1; Chksum="$$(psql --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" --tuples-only --no-align --command='SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database')"; echo "checksum failure count is $$Chksum"; [ "$$Chksum" = '0' ] || exit 1
       interval: 5m
       start_interval: 30s
       start_period: 5m
     command: >-
-      postgres
-      -c shared_preload_libraries=vectors.so
-      -c 'search_path="$$user", public, vectors'
-      -c logging_collector=on
-      -c max_wal_size=2GB
-      -c shared_buffers=512MB
-      -c wal_compression=on
+      postgres -c shared_preload_libraries=vectors.so -c 'search_path="$$user", public, vectors' -c logging_collector=on -c max_wal_size=2GB -c shared_buffers=512MB -c wal_compression=on
     restart: always
 
   # set IMMICH_TELEMETRY_INCLUDE=all in .env to enable metrics
@@ -100,7 +113,7 @@ services:
   # add data source for http://immich-prometheus:9090 to get started
   immich-grafana:
     container_name: immich_grafana
-    command: ['./run.sh', '-disable-reporting']
+    command: [ './run.sh', '-disable-reporting' ]
     ports:
       - 3000:3000
     image: grafana/grafana:11.4.0-ubuntu@sha256:afccec22ba0e4815cca1d2bf3836e414322390dc78d77f1851976ffa8d61051c
@@ -111,3 +124,18 @@ volumes:
   model-cache:
   prometheus-data:
   grafana-data:
+  rclone-cache:
+  idrivee2-photo-prod:
+    # driver: rclone
+    # driver_opts:
+    #   remote: 'idrivee2:immich-photo'
+    #   allow_other: 'true'
+    #   vfs_cache_mode: full
+    #   poll_interval: 0
+    # idrivee2-databases:
+    # driver: rclone
+    # driver_opts:
+    #   remote: 'idrivee2:immich-db'
+    #   allow_other: 'true'
+    #   vfs_cache_mode: full
+    #   poll_interval: 0

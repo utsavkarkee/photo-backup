@@ -7,7 +7,7 @@ name: immich-dev
 services:
   immich-server:
     container_name: immich_server
-    command: ['/usr/src/app/bin/immich-dev']
+    command: [ '/usr/src/app/bin/immich-dev' ]
     image: immich-server-dev:latest
     # extends:
     #   file: hwaccel.transcoding.yml
@@ -22,6 +22,8 @@ services:
       - ../open-api:/usr/src/open-api
       - ${UPLOAD_LOCATION}/photos:/usr/src/app/upload
       - ${UPLOAD_LOCATION}/photos/upload:/usr/src/app/upload/upload
+      - idrivee2-photo:/usr/src/app/upload
+      - idrivee2-photo:/usr/src/app/upload/upload
       - /usr/src/app/node_modules
       - /etc/localtime:/etc/localtime:ro
     env_file:
@@ -54,6 +56,38 @@ services:
     healthcheck:
       disable: false
 
+  rclone-backup:
+    image: alpine:latest
+    volumes:
+      - ${UPLOAD_LOCATION}/upload:/source/uploads:ro
+      - ./rclone.conf:/config/rclone.conf:ro
+      - ./watch-and-sync.sh:/watch-and-sync.sh
+      - rclone-cache:/cache
+    environment:
+      - RCLONE_CONFIG=/config/rclone.conf
+    entrypoint: |
+      /bin/sh -c '
+      apk add --no-cache rclone &&
+      apk add --no-cache inotify-tools &&
+      chmod +x /watch-and-sync.sh &&
+      /watch-and-sync.sh'
+    restart: unless-stopped
+    depends_on:
+      - immich-server
+  # rclone-backup:
+  #   image: rclone/rclone
+  #   volumes:
+  #     - ${UPLOAD_LOCATION}/upload:/source/uploads:ro
+  #     - ./rclone.conf:/config/rclone.conf:ro
+  #     - ./backup-script.sh:/backup-script.sh:ro
+  #   environment:
+  #     - CRON_SCHEDULE= * * * * * # Run daily at midnight
+  #     - RCLONE_CONFIG=/config/rclone.conf
+  #   # command: sync /source/uploads idrivee2:immich-photo
+  #   command: bash -c "crond -f -d 8 && echo \"$$CRON_SCHEDULE /backup-script.sh\" >> /etc/crontabs/root"
+  #   depends_on:
+  #     - immich-server
+
   immich-web:
     container_name: immich_web
     image: immich-web-dev:latest
@@ -61,7 +95,7 @@ services:
     # user: 0:0
     build:
       context: ../web
-    command: ['/usr/src/app/bin/immich-web']
+    command: [ '/usr/src/app/bin/immich-web' ]
     env_file:
       - .env
     ports:
@@ -127,23 +161,12 @@ services:
       - 5432:5432
     healthcheck:
       test: >-
-        pg_isready --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" || exit 1;
-        Chksum="$$(psql --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" --tuples-only --no-align
-        --command='SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database')";
-        echo "checksum failure count is $$Chksum";
-        [ "$$Chksum" = '0' ] || exit 1
+        pg_isready --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" || exit 1; Chksum="$$(psql --dbname="$${POSTGRES_DB}" --username="$${POSTGRES_USER}" --tuples-only --no-align --command='SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database')"; echo "checksum failure count is $$Chksum"; [ "$$Chksum" = '0' ] || exit 1
       interval: 5m
       start_interval: 30s
       start_period: 5m
     command: >-
-      postgres
-      -c shared_preload_libraries=vectors.so
-      -c 'search_path="$$user", public, vectors'
-      -c logging_collector=on
-      -c max_wal_size=2GB
-      -c shared_buffers=512MB
-      -c wal_compression=on
-
+      postgres -c shared_preload_libraries=vectors.so -c 'search_path="$$user", public, vectors' -c logging_collector=on -c max_wal_size=2GB -c shared_buffers=512MB -c wal_compression=on
   # set IMMICH_TELEMETRY_INCLUDE=all in .env to enable metrics
   # immich-prometheus:
   #   container_name: immich_prometheus
@@ -169,3 +192,18 @@ volumes:
   model-cache:
   prometheus-data:
   grafana-data:
+  rclone-cache:
+  idrivee2-photo:
+    driver: rclone
+    driver_opts:
+      remote: 'idrivee2:immich-photo'
+      allow_other: 'true'
+      vfs_cache_mode: full
+      poll_interval: 0
+  idrivee2-databases:
+    driver: rclone
+    driver_opts:
+      remote: 'idrivee2:immich-db'
+      allow_other: 'true'
+      vfs_cache_mode: full
+      poll_interval: 0
